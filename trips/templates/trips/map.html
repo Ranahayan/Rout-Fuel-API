@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fuel-Optimal Route</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+    #map { height: 100%; width: 100%; }
+    .panel {
+      position: absolute; top: 12px; right: 12px; z-index: 1000;
+      background: rgba(255,255,255,0.95); padding: 12px 14px; border-radius: 8px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.3); max-width: 280px; font-size: 13px;
+    }
+    .panel h2 { margin: 0 0 6px; font-size: 15px; }
+    .panel .big { font-size: 20px; font-weight: 700; color: #b00020; }
+    .err { padding: 24px; color: #b00020; font-size: 16px; }
+  </style>
+</head>
+<body>
+  {% if error %}
+    <div class="err">Could not render map: {{ error }}</div>
+  {% else %}
+  <div id="map"></div>
+  <div class="panel" id="panel"></div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  {{ geometry_json|json_script:"geometry-data" }}
+  {{ stops_json|json_script:"stops-data" }}
+  {{ summary_json|json_script:"summary-data" }}
+  <script>
+    const geometry = JSON.parse(document.getElementById("geometry-data").textContent);
+    const stops = JSON.parse(document.getElementById("stops-data").textContent);
+    const summary = JSON.parse(document.getElementById("summary-data").textContent);
+
+    const map = L.map("map");
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    // GeoJSON coordinates are [lng, lat]; Leaflet wants [lat, lng].
+    const latlngs = geometry.coordinates.map(c => [c[1], c[0]]);
+    const line = L.polyline(latlngs, { color: "#1565c0", weight: 4 }).addTo(map);
+    map.fitBounds(line.getBounds(), { padding: [30, 30] });
+
+    stops.forEach(s => {
+      L.marker([s.location.lat, s.location.lng]).addTo(map).bindPopup(
+        `<b>#${s.order} ${s.name}</b><br>${s.city}, ${s.state}` +
+        `<br>Mile ${s.route_mile_marker} &middot; $${s.price_per_gallon}/gal` +
+        `<br>${s.gallons_purchased} gal &middot; $${s.cost_usd}`
+      );
+    });
+
+    document.getElementById("panel").innerHTML =
+      `<h2>Fuel-Optimal Route</h2>` +
+      `Distance: <b>${summary.route.total_distance_miles} mi</b><br>` +
+      `Fuel stops: <b>${stops.length}</b><br>` +
+      `Total fuel: <b>${summary.fuel.total_gallons} gal</b><br>` +
+      `<div class="big">$${summary.fuel.total_cost_usd}</div>` +
+      `<small>${summary.fuel.mpg} mpg &middot; ${summary.fuel.tank_range_miles} mi range ` +
+      `&middot; via ${summary.route.provider}</small>`;
+  </script>
+  {% endif %}
+</body>
+</html>
