@@ -1,0 +1,7 @@
+# Development / test tooling on top of the runtime set (exact versions: requirements-dev.lock).
+-r requirements.txt
+pytest==9.*
+pytest-django==4.14.*
+responses==0.26.*
+ruff==0.16.*
+pytest-cov==7.*

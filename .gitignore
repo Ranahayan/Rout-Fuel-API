@@ -14,8 +14,8 @@ env/
 ENV/
 
 # ---- Secrets / local config ----
-# .env holds the real ORS_API_KEY and must never be committed.
-# .env.example is the tracked template (kept via the negation below).
+# .env holds the real ORS_API_KEY and must never be committed; .env.example is
+# the tracked template (a different file name, so no negation is needed).
 .env
 
 

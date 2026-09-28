@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.claude
+db.sqlite3*
+.env
+docs/
+tests/
+Remote_Backend_Django_Engineer_AI_&_Algorithmic_Systems.txt

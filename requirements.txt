@@ -1,13 +1,9 @@
-Django==5.2.*
-djangorestframework==3.16.*
-requests==2.32.*
-numpy==2.1.*
-scipy==1.14.*
-pyproj==3.7.*
-django-environ==0.11.*
-
-# Dev / test
-pytest==8.*
-pytest-django==4.*
-responses==0.25.*
-ruff==0.6.*
+# Runtime dependencies (pinned to a minor series; exact versions live in requirements.lock).
+Django==6.1.*
+djangorestframework==3.18.*
+requests==2.34.*
+numpy==2.5.*
+scipy==1.18.*
+django-environ==0.14.*
+redis==8.*              # only used when REDIS_URL is set (shared cache/throttle store)
+gunicorn==26.*          # production WSGI server (see Dockerfile)

@@ -1,3 +1,11 @@
+[project]
+name = "fuel-route-api"
+version = "1.0.0"
+description = "USA fuel-optimal route API: one routing call, cost-optimal fuel stops, total fuel cost."
+readme = "README.md"
+# Django 6.x needs 3.12+; numpy/scipy wheels ship for 3.12-3.14.
+requires-python = ">=3.12"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
@@ -13,3 +21,18 @@ ignore = ["E501"]  # line length is enforced by the formatter, not the linter
 
 [tool.ruff.format]
 quote-style = "double"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings_test"
+python_files = ["tests.py", "test_*.py", "*_tests.py"]
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.coverage.run]
+source = ["config", "routing", "stations", "trips"]
+omit = ["config/asgi.py", "config/wsgi.py", "*/migrations/*"]
+
+[tool.coverage.report]
+fail_under = 95
+show_missing = true
+skip_covered = true
