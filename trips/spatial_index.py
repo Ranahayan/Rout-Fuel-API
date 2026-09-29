@@ -1,8 +1,12 @@
 """In-memory spatial index of geocoded fuel stations.
 
-Built ONCE per process from the FuelStation table (the table is the source of
-truth; this index is a rebuildable cache). At ~6.6k points the scipy cKDTree is
-built in tens of milliseconds, so per-request corridor queries are sub-millisecond.
+Built from the FuelStation table (the table is the source of truth; this index
+is a rebuildable cache) and rebuilt automatically when the table changes: every
+``FINGERPRINT_CHECK_SECONDS`` a request re-reads the table's fingerprint
+(row count + newest ``updated_at``) and, if it moved -- ``load_fuel_prices`` ran
+in another process -- rebuilds the index, so a reload never needs a restart. At
+~6.6k points the scipy cKDTree is built in tens of milliseconds, so per-request
+corridor queries are sub-millisecond.
 
 Stations are embedded in a local "flat" XYZ space on the unit sphere so that a
 Euclidean radius on the tree corresponds to a great-circle distance, letting us
@@ -11,14 +15,20 @@ query "all stations within R miles of a point" directly.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
+import time
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.spatial import cKDTree
 
 from trips.geo import EARTH_RADIUS_MILES
+
+logger = logging.getLogger(__name__)
+
+FINGERPRINT_CHECK_SECONDS = 5.0  # how often a request re-checks the table for a reload
 
 
 @dataclass
@@ -74,9 +84,15 @@ class StationSpatialIndex:
             found.update(idx_list)
         return sorted(found)
 
+    @property
+    def station_count(self) -> int:
+        return len(self.stations)
+
 
 _index_lock = threading.Lock()
 _index: StationSpatialIndex | None = None
+_fingerprint: tuple | None = None
+_checked_at = 0.0
 
 
 def _load_stations() -> list[Station]:
@@ -104,18 +120,37 @@ def _load_stations() -> list[Station]:
     ]
 
 
+def _table_fingerprint() -> tuple:
+    """Cheap change detector for the FuelStation table (one aggregate query)."""
+    from django.db.models import Count, Max
+
+    from stations.models import FuelStation
+
+    agg = FuelStation.objects.aggregate(rows=Count("id"), newest=Max("updated_at"))
+    return (agg["rows"], agg["newest"])
+
+
 def get_index() -> StationSpatialIndex:
-    """Process-wide singleton, built lazily on first use."""
-    global _index
-    if _index is None:
-        with _index_lock:
-            if _index is None:
-                _index = StationSpatialIndex(_load_stations())
-    return _index
+    """Process-wide singleton, built lazily and rebuilt when the table changes."""
+    global _index, _fingerprint, _checked_at
+    if _index is not None and time.monotonic() - _checked_at < FINGERPRINT_CHECK_SECONDS:
+        return _index
+    with _index_lock:
+        if _index is not None and time.monotonic() - _checked_at < FINGERPRINT_CHECK_SECONDS:
+            return _index
+        fingerprint = _table_fingerprint()
+        if _index is None or fingerprint != _fingerprint:
+            _index = StationSpatialIndex(_load_stations())
+            _fingerprint = fingerprint
+            logger.info("Spatial index built from %d geocoded stations", _index.station_count)
+        _checked_at = time.monotonic()
+        return _index
 
 
 def reset_index() -> None:
     """Drop the cached index (used by tests after loading fixture data)."""
-    global _index
+    global _index, _fingerprint, _checked_at
     with _index_lock:
         _index = None
+        _fingerprint = None
+        _checked_at = 0.0

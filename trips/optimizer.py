@@ -33,12 +33,24 @@ EPS = 1e-9
 
 
 class InfeasibleRouteError(Exception):
-    """No fueling plan exists within the vehicle's range."""
+    """No fueling plan exists within the vehicle's range.
 
-    def __init__(self, message: str, segment_start: float, segment_end: float):
+    ``segment_start``/``segment_end`` are the offending mile markers. The service
+    layer sets ``buffer_miles`` (the corridor width that was searched) so the
+    HTTP layer can decide whether suggesting a wider buffer still makes sense.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        segment_start: float,
+        segment_end: float,
+        buffer_miles: float | None = None,
+    ):
         super().__init__(message)
         self.segment_start = segment_start
         self.segment_end = segment_end
+        self.buffer_miles = buffer_miles
 
 
 @dataclass(frozen=True)
@@ -99,7 +111,12 @@ def optimize_fuel_plan(
     mpg: float,
 ) -> FuelPlan:
     """Return the minimum-cost fuel plan, or raise InfeasibleRouteError."""
-    stations = sorted(candidates, key=lambda c: c.mile_marker)
+    # A station beyond the destination can never be visited: keep it out of the
+    # feasibility gaps and the "cheaper station ahead" search alike.
+    stations = sorted(
+        (c for c in candidates if c.mile_marker <= total_distance_miles + EPS),
+        key=lambda c: c.mile_marker,
+    )
     positions = [c.mile_marker for c in stations]
     _check_feasibility(positions, total_distance_miles, range_miles)
 

@@ -12,9 +12,15 @@ from django.core.cache import cache
 from routing.client import get_route
 
 from .corridor import find_candidates
-from .optimizer import FuelCandidate, FuelPlan, optimize_fuel_plan
+from .optimizer import FuelCandidate, FuelPlan, InfeasibleRouteError, optimize_fuel_plan
+from .spatial_index import get_index
 
 logger = logging.getLogger(__name__)
+
+
+class NoStationsLoadedError(Exception):
+    """The station table is empty: ``load_fuel_prices`` has not been run here."""
+
 
 _CENTS = Decimal("0.01")
 
@@ -36,8 +42,14 @@ def _canonical_endpoint(ep) -> str:
 
 
 def _plan_cache_key(start, finish, buffer_miles) -> str:
-    raw = f"{_canonical_endpoint(start)}|{_canonical_endpoint(finish)}|{buffer_miles}"
-    return "plan:" + hashlib.md5(raw.encode()).hexdigest()
+    # Everything that shapes a plan: endpoints, corridor width, and the vehicle /
+    # provider settings (so changing them with a shared Redis cannot serve a
+    # stale plan for the cache TTL).
+    raw = (
+        f"{_canonical_endpoint(start)}|{_canonical_endpoint(finish)}|{buffer_miles}|"
+        f"{settings.VEHICLE_RANGE_MILES}|{settings.VEHICLE_MPG}|{settings.ROUTING_PROVIDER}"
+    )
+    return "plan:" + hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()
 
 
 def plan_trip(start, finish, buffer_miles: float | None = None) -> dict:
@@ -57,16 +69,26 @@ def plan_trip(start, finish, buffer_miles: float | None = None) -> dict:
 
     route = get_route(start, finish)
     candidates, total_miles = find_candidates(route, buffer_miles)
+    if not candidates and get_index().station_count == 0:
+        raise NoStationsLoadedError(
+            "No fuel stations are loaded on this server; run `python manage.py load_fuel_prices`."
+        )
 
     fuel_candidates = [
         FuelCandidate(mile_marker=c.mile_marker, price=c.station.price, meta=c) for c in candidates
     ]
-    plan = optimize_fuel_plan(
-        fuel_candidates,
-        total_distance_miles=total_miles,
-        range_miles=settings.VEHICLE_RANGE_MILES,
-        mpg=settings.VEHICLE_MPG,
-    )
+    try:
+        plan = optimize_fuel_plan(
+            fuel_candidates,
+            total_distance_miles=total_miles,
+            range_miles=settings.VEHICLE_RANGE_MILES,
+            mpg=settings.VEHICLE_MPG,
+        )
+    except InfeasibleRouteError as exc:
+        exc.buffer_miles = (
+            buffer_miles  # let the HTTP layer judge whether a wider buffer could help
+        )
+        raise
 
     result = _serialize(route, plan)
     cache.set(key, result)
@@ -76,11 +98,14 @@ def plan_trip(start, finish, buffer_miles: float | None = None) -> dict:
 def _serialize(route, plan: FuelPlan) -> dict:
     stops = []
     total_cost = Decimal("0.00")
+    total_gallons = 0.0
     for order, stop in enumerate(plan.stops, start=1):
         candidate = stop.candidate.meta  # corridor.Candidate
         station = candidate.station
         cost = _usd(stop.cost)
         total_cost += cost
+        gallons = round(stop.gallons, 2)
+        total_gallons += gallons
         stops.append(
             {
                 "order": order,
@@ -92,7 +117,7 @@ def _serialize(route, plan: FuelPlan) -> dict:
                 "route_mile_marker": round(stop.candidate.mile_marker, 1),
                 "detour_miles": round(candidate.detour_miles, 1),
                 "price_per_gallon": f"{station.price:.3f}",
-                "gallons_purchased": round(stop.gallons, 2),
+                "gallons_purchased": gallons,
                 "cost_usd": f"{cost:.2f}",
             }
         )
@@ -120,8 +145,9 @@ def _serialize(route, plan: FuelPlan) -> dict:
             "mpg": plan.mpg,
             "tank_range_miles": plan.range_miles,
             "start_tank_assumption": "empty",
-            "total_gallons": round(plan.total_gallons, 2),
-            # Sum of the per-stop rounded costs, so the parts reconcile exactly.
+            # Sums of the per-stop rounded figures, so the parts reconcile exactly
+            # (the unrounded total is distance / mpg to within a cent-gallon per stop).
+            "total_gallons": round(total_gallons, 2),
             "total_cost_usd": f"{total_cost:.2f}",
         },
         "fuel_stops": stops,

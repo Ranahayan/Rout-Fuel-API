@@ -4,8 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Fuel-Optimal Route</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <style>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
+        crossorigin="anonymous" />
+  <style nonce="{{ csp_nonce }}">
     html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
     #map { height: 100%; width: 100%; }
     .panel {
@@ -24,11 +26,13 @@
   {% else %}
   <div id="map"></div>
   <div class="panel" id="panel"></div>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  {{ geometry_json|json_script:"geometry-data" }}
-  {{ stops_json|json_script:"stops-data" }}
-  {{ summary_json|json_script:"summary-data" }}
-  <script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
+          crossorigin="anonymous"></script>
+  {{ geometry|json_script:"geometry-data" }}
+  {{ stops|json_script:"stops-data" }}
+  {{ summary|json_script:"summary-data" }}
+  <script nonce="{{ csp_nonce }}">
     const geometry = JSON.parse(document.getElementById("geometry-data").textContent);
     const stops = JSON.parse(document.getElementById("stops-data").textContent);
     const summary = JSON.parse(document.getElementById("summary-data").textContent);

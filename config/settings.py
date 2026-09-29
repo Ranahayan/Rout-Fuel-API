@@ -5,10 +5,12 @@ See README.md for the project overview. Environment-driven settings are read
 via django-environ; copy .env.example to .env to configure (an ORS API key is
 optional — the service falls back to the keyless OSRM provider).
 
-Defaults are dev-friendly so the project runs with zero configuration. The
-production path (``DEBUG=False``) is *guarded*: it refuses to boot with the
-insecure dev SECRET_KEY or an unset ALLOWED_HOSTS, and it switches on the usual
-transport-security settings — see the guard blocks below.
+Defaults are production-safe: ``DEBUG`` is off unless a ``.env`` (or the
+environment) turns it on, and the production path is *guarded* -- it refuses to
+boot with the insecure dev SECRET_KEY or an unset ALLOWED_HOSTS, and switches on
+the usual transport-security settings (see the guard blocks below). Local
+development uses ``.env.example`` (``DEBUG=True``); the test suite uses
+``config.settings_test``.
 """
 
 from pathlib import Path
@@ -24,14 +26,24 @@ DATA_DIR = BASE_DIR / "data"
 INSECURE_SECRET_KEY = "django-insecure-dev-key-change-me-in-production"
 
 env = environ.Env(
-    DEBUG=(bool, True),
+    DEBUG=(bool, False),
     SECRET_KEY=(str, INSECURE_SECRET_KEY),
     ALLOWED_HOSTS=(list, []),
     LOG_LEVEL=(str, "INFO"),
     # --- Caching / throttling (shared in prod via REDIS_URL) ---
     REDIS_URL=(str, ""),
     ANON_THROTTLE_RATE=(str, "30/min"),
-    USER_THROTTLE_RATE=(str, "120/min"),
+    # Trusted reverse-proxy hops in front of the app. 0 = identify clients by the
+    # socket address and ignore X-Forwarded-For (which any client can forge).
+    NUM_PROXIES=(int, 0),
+    # Production transport security (only read when DEBUG=False).
+    SECURE_SSL_REDIRECT=(bool, True),
+    SECURE_HSTS_SECONDS=(int, 60 * 60 * 24 * 365),
+    # Preload is a long-term commitment that is hard to undo; opt in deliberately.
+    SECURE_HSTS_PRELOAD=(bool, False),
+    # Trust X-Forwarded-Proto from a TLS-terminating proxy. Set False when the app
+    # is exposed directly, or a client could spoof "https" to skip the redirect.
+    TRUST_X_FORWARDED_PROTO=(bool, True),
     # --- Routing provider ---
     ROUTING_PROVIDER=(str, ""),  # "ors" | "osrm" | "" (auto: ors if key else osrm)
     ORS_API_KEY=(str, ""),
@@ -40,13 +52,25 @@ env = environ.Env(
     ORS_BASE_URL=(str, "https://api.openrouteservice.org"),
     OSRM_BASE_URL=(str, "https://router.project-osrm.org"),
     ROUTING_TIMEOUT_SECONDS=(float, 8.0),
+    # Wall-clock budget for ALL upstream work in one request (geocodes, the
+    # routing call, its retry and the fallback provider). Keep it under the
+    # web server's worker timeout (gunicorn defaults to 30 s).
+    ROUTING_TOTAL_DEADLINE_SECONDS=(float, 20.0),
+    # After a provider FAILURE (outage, quota, unusable response) try the other
+    # provider once, if usable: ORS -> OSRM always; OSRM -> ORS when a key is set.
+    ROUTING_FALLBACK=(bool, True),
+    # How long a provider *failure* for a given trip is remembered before the
+    # provider is asked again (0 disables). Unroutable trips are cached like results.
+    ROUTING_FAILURE_CACHE_SECONDS=(int, 30),
     # --- Algorithm tunables ---
     VEHICLE_RANGE_MILES=(float, 500.0),
     VEHICLE_MPG=(float, 10.0),
     CORRIDOR_BUFFER_MILES=(float, 7.0),
-    # --- Data files ---
+    # --- Storage / data files ---
+    DATABASE_PATH=(str, str(BASE_DIR / "db.sqlite3")),  # put it on a volume in containers
     FUEL_CSV_PATH=(str, str(DATA_DIR / "fuel-prices-for-be-assessment.csv")),
     US_CITIES_CSV_PATH=(str, str(DATA_DIR / "uscities.csv")),
+    US_BOUNDARY_GEOJSON_PATH=(str, str(DATA_DIR / "us_boundary_ne10m.geojson")),
 )
 
 # Load .env if present (optional).
@@ -116,7 +140,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        "NAME": env("DATABASE_PATH"),
     }
 }
 
@@ -127,7 +151,9 @@ DATABASES = {
 if env("REDIS_URL"):
     CACHES = {
         "default": {
-            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            # RedisCache subclass that degrades to "no cache" when Redis is down
+            # instead of turning every request into a 500 (see config/cache.py).
+            "BACKEND": "config.cache.SafeRedisCache",
             "LOCATION": env("REDIS_URL"),
             "TIMEOUT": 60 * 60 * 6,  # 6 hours; CSV prices are static
         }
@@ -141,7 +167,13 @@ else:
         }
     }
 
-AUTH_PASSWORD_VALIDATORS = []
+# Django's defaults: the admin is enabled, so admin accounts get real password rules.
+AUTH_PASSWORD_VALIDATORS = [
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
@@ -153,26 +185,36 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
+    # The browsable HTML API is a development aid: it costs 20-40x a JSON
+    # response to render and widens the surface, so it is off in production.
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
-        "rest_framework.renderers.BrowsableAPIRenderer",
+        *(["rest_framework.renderers.BrowsableAPIRenderer"] if DEBUG else []),
     ],
     "DEFAULT_PARSER_CLASSES": ["rest_framework.parsers.JSONParser"],
-    # Per-IP (anon) / per-user rate limiting. The endpoint triggers an external
-    # routing call and CPU-bound work on a cache miss, so it must not be
-    # unbounded. Counters live in the default cache (shared via REDIS_URL).
-    "DEFAULT_THROTTLE_CLASSES": [
-        "rest_framework.throttling.AnonRateThrottle",
-        "rest_framework.throttling.UserRateThrottle",
-    ],
-    "DEFAULT_THROTTLE_RATES": {
-        "anon": env("ANON_THROTTLE_RATE"),
-        "user": env("USER_THROTTLE_RATE"),
-    },
+    # One error envelope {"error", "code", ...} for every failure (see trips/api_errors.py).
+    "EXCEPTION_HANDLER": "trips.api_errors.api_exception_handler",
+    # A public, read-only API: no authentication scheme at all. (DRF's default
+    # Session+Basic auth would run password hashing for any forged Basic header
+    # *before* throttling -- an unthrottled password-guessing oracle for admin
+    # accounts.) The Django admin keeps its own session login.
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    # Per-IP rate limiting, applied to every DRF view -- the JSON endpoint AND
+    # the map page, which trigger the same external routing call and CPU-bound
+    # work on a cache miss. Counters live in the default cache (shared via
+    # REDIS_URL).
+    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.AnonRateThrottle"],
+    "DEFAULT_THROTTLE_RATES": {"anon": env("ANON_THROTTLE_RATE")},
+    # With 0, the throttle keys on REMOTE_ADDR only; a forged X-Forwarded-For
+    # header cannot mint a fresh quota. Set to the real number of proxy hops.
+    "NUM_PROXIES": env("NUM_PROXIES"),
 }
 
 # Structured logging so provider failures, endpoint-resolution errors, and the
-# routing-call budget are observable instead of silent.
+# routing-call budget are observable instead of silent. Every record passes
+# through a redaction filter: the ORS geocoder takes the API key as a query
+# parameter, so a logged HTTP exception (which embeds the URL) would otherwise
+# write the key to the logs.
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -182,8 +224,15 @@ LOGGING = {
             "style": "{",
         },
     },
+    "filters": {
+        "redact_secrets": {"()": "routing.redaction.RedactSecretsFilter"},
+    },
     "handlers": {
-        "console": {"class": "logging.StreamHandler", "formatter": "verbose"},
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+            "filters": ["redact_secrets"],
+        },
     },
     "root": {"handlers": ["console"], "level": "WARNING"},
     "loggers": {
@@ -194,16 +243,21 @@ LOGGING = {
     },
 }
 
-# Production transport-security hardening (no-ops in DEBUG; assumes TLS is
-# terminated upstream and forwarded via X-Forwarded-Proto).
+# Production transport-security hardening (no-ops in DEBUG).
 if not DEBUG:
-    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-    SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)
-    SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=60 * 60 * 24 * 365)
+    if env("TRUST_X_FORWARDED_PROTO"):  # TLS terminated by a trusted proxy
+        SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = env("SECURE_SSL_REDIRECT")
+    SECURE_HSTS_SECONDS = env("SECURE_HSTS_SECONDS")
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
+    SECURE_HSTS_PRELOAD = env("SECURE_HSTS_PRELOAD")
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+    # Load-balancer probes hit /healthz over plain HTTP; a 301 would mark us down.
+    SECURE_REDIRECT_EXEMPT = [r"^healthz/?$"]
+    # HSTS preload is deliberately opt-in (SECURE_HSTS_PRELOAD); `check --deploy`
+    # would otherwise nag about it on every run.
+    SILENCED_SYSTEM_CHECKS = ["security.W021"]
 
 # --- Project-specific settings (consumed across apps) ---
 ROUTING_PROVIDER = env("ROUTING_PROVIDER")
@@ -212,6 +266,9 @@ ORS_GEOCODE_MIN_CONFIDENCE = env("ORS_GEOCODE_MIN_CONFIDENCE")
 ORS_BASE_URL = env("ORS_BASE_URL")
 OSRM_BASE_URL = env("OSRM_BASE_URL")
 ROUTING_TIMEOUT_SECONDS = env("ROUTING_TIMEOUT_SECONDS")
+ROUTING_TOTAL_DEADLINE_SECONDS = env("ROUTING_TOTAL_DEADLINE_SECONDS")
+ROUTING_FALLBACK = env("ROUTING_FALLBACK")
+ROUTING_FAILURE_CACHE_SECONDS = env("ROUTING_FAILURE_CACHE_SECONDS")
 
 VEHICLE_RANGE_MILES = env("VEHICLE_RANGE_MILES")
 VEHICLE_MPG = env("VEHICLE_MPG")
@@ -219,3 +276,4 @@ CORRIDOR_BUFFER_MILES = env("CORRIDOR_BUFFER_MILES")
 
 FUEL_CSV_PATH = env("FUEL_CSV_PATH")
 US_CITIES_CSV_PATH = env("US_CITIES_CSV_PATH")
+US_BOUNDARY_GEOJSON_PATH = env("US_BOUNDARY_GEOJSON_PATH")
