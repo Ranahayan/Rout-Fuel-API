@@ -1,0 +1,590 @@
+{
+  "info": {
+    "name": "Fuel Route API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Smoke tests for the USA fuel-optimal route API. Import, set `base` (default http://127.0.0.1:8000), then Run the collection: every request carries assertions, so the runner shows pass/fail per call.\n\nFirst-time trips make one routing-provider call each (1-4 s); repeats are cache hits (milliseconds)."
+  },
+  "variable": [
+    {
+      "key": "base",
+      "value": "http://127.0.0.1:8000"
+    }
+  ],
+  "item": [
+    {
+      "name": "1 Health",
+      "item": [
+        {
+          "name": "GET /healthz -> 200 ok",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/healthz/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ok with stations indexed\", () => { const b = pm.response.json(); pm.expect(b.status).to.eql(\"ok\"); pm.expect(b.stations_indexed).to.be.above(6000); pm.expect(b.checks.database).to.eql(\"ok\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2 Happy path",
+      "item": [
+        {
+          "name": "POST plan, place names -> 200",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/route-fuel-plan/",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"start\": \"Chicago, IL\", \"finish\": \"Houston, TX\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"route geometry + distance\", () => { pm.expect(b.route.geometry.type).to.eql(\"LineString\"); pm.expect(b.route.total_distance_miles).to.be.above(0); pm.expect(b.route.map_url).to.include(\"/map/\"); });",
+                  "pm.test(\"total gallons = distance / 10 mpg\", () => pm.expect(Math.abs(b.fuel.total_gallons - b.route.total_distance_miles / 10)).to.be.below(0.5));",
+                  "pm.test(\"stops ordered, every gap <= 500 mi\", () => { const m = b.fuel_stops.map(s => s.route_mile_marker); pm.expect(m.length).to.be.above(0); let prev = 0; for (const x of m) { pm.expect(x - prev).to.be.at.most(500.05); prev = x; } pm.expect(b.route.total_distance_miles - prev).to.be.at.most(500.05); });",
+                  "pm.test(\"stop costs sum to the total\", () => { const sum = b.fuel_stops.reduce((a, s) => a + parseFloat(s.cost_usd), 0); pm.expect(Math.abs(sum - parseFloat(b.fuel.total_cost_usd))).to.be.below(0.011); });",
+                  "pm.test(\"Chicago -> Houston is ~1,090 mi\", () => pm.expect(b.route.total_distance_miles).to.be.within(1000, 1200));",
+                  "pm.collectionVariables.set(\"map_url\", b.route.map_url);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET plan, same trip -> 200 cache hit (fast)",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Chicago, IL&finish=Houston, TX"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"route geometry + distance\", () => { pm.expect(b.route.geometry.type).to.eql(\"LineString\"); pm.expect(b.route.total_distance_miles).to.be.above(0); pm.expect(b.route.map_url).to.include(\"/map/\"); });",
+                  "pm.test(\"total gallons = distance / 10 mpg\", () => pm.expect(Math.abs(b.fuel.total_gallons - b.route.total_distance_miles / 10)).to.be.below(0.5));",
+                  "pm.test(\"stops ordered, every gap <= 500 mi\", () => { const m = b.fuel_stops.map(s => s.route_mile_marker); pm.expect(m.length).to.be.above(0); let prev = 0; for (const x of m) { pm.expect(x - prev).to.be.at.most(500.05); prev = x; } pm.expect(b.route.total_distance_miles - prev).to.be.at.most(500.05); });",
+                  "pm.test(\"stop costs sum to the total\", () => { const sum = b.fuel_stops.reduce((a, s) => a + parseFloat(s.cost_usd), 0); pm.expect(Math.abs(sum - parseFloat(b.fuel.total_cost_usd))).to.be.below(0.011); });",
+                  "pm.test(\"served from cache in under 500 ms\", () => pm.expect(pm.response.responseTime).to.be.below(500));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST plan, coordinate objects -> 200",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/route-fuel-plan/",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"start\": {\"lat\": 41.8781, \"lng\": -87.6298}, \"finish\": {\"lat\": 29.7604, \"lng\": -95.3698}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"route geometry + distance\", () => { pm.expect(b.route.geometry.type).to.eql(\"LineString\"); pm.expect(b.route.total_distance_miles).to.be.above(0); pm.expect(b.route.map_url).to.include(\"/map/\"); });",
+                  "pm.test(\"total gallons = distance / 10 mpg\", () => pm.expect(Math.abs(b.fuel.total_gallons - b.route.total_distance_miles / 10)).to.be.below(0.5));",
+                  "pm.test(\"stops ordered, every gap <= 500 mi\", () => { const m = b.fuel_stops.map(s => s.route_mile_marker); pm.expect(m.length).to.be.above(0); let prev = 0; for (const x of m) { pm.expect(x - prev).to.be.at.most(500.05); prev = x; } pm.expect(b.route.total_distance_miles - prev).to.be.at.most(500.05); });",
+                  "pm.test(\"stop costs sum to the total\", () => { const sum = b.fuel_stops.reduce((a, s) => a + parseFloat(s.cost_usd), 0); pm.expect(Math.abs(sum - parseFloat(b.fuel.total_cost_usd))).to.be.below(0.011); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST plan, lat,lng strings + buffer_miles -> 200",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/route-fuel-plan/",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"start\": \"41.8781,-87.6298\", \"finish\": \"29.7604,-95.3698\", \"buffer_miles\": 12}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"route geometry + distance\", () => { pm.expect(b.route.geometry.type).to.eql(\"LineString\"); pm.expect(b.route.total_distance_miles).to.be.above(0); pm.expect(b.route.map_url).to.include(\"/map/\"); });",
+                  "pm.test(\"total gallons = distance / 10 mpg\", () => pm.expect(Math.abs(b.fuel.total_gallons - b.route.total_distance_miles / 10)).to.be.below(0.5));",
+                  "pm.test(\"stops ordered, every gap <= 500 mi\", () => { const m = b.fuel_stops.map(s => s.route_mile_marker); pm.expect(m.length).to.be.above(0); let prev = 0; for (const x of m) { pm.expect(x - prev).to.be.at.most(500.05); prev = x; } pm.expect(b.route.total_distance_miles - prev).to.be.at.most(500.05); });",
+                  "pm.test(\"stop costs sum to the total\", () => { const sum = b.fuel_stops.reduce((a, s) => a + parseFloat(s.cost_usd), 0); pm.expect(Math.abs(sum - parseFloat(b.fuel.total_cost_usd))).to.be.below(0.011); });",
+                  "pm.test(\"map_url keeps buffer_miles\", () => pm.expect(b.route.map_url).to.include(\"buffer_miles=12\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET plan, loose spellings + full state name -> 200",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Winston-Salem, North Carolina&finish=Lee's Summit MO"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"route geometry + distance\", () => { pm.expect(b.route.geometry.type).to.eql(\"LineString\"); pm.expect(b.route.total_distance_miles).to.be.above(0); pm.expect(b.route.map_url).to.include(\"/map/\"); });",
+                  "pm.test(\"total gallons = distance / 10 mpg\", () => pm.expect(Math.abs(b.fuel.total_gallons - b.route.total_distance_miles / 10)).to.be.below(0.5));",
+                  "pm.test(\"stops ordered, every gap <= 500 mi\", () => { const m = b.fuel_stops.map(s => s.route_mile_marker); pm.expect(m.length).to.be.above(0); let prev = 0; for (const x of m) { pm.expect(x - prev).to.be.at.most(500.05); prev = x; } pm.expect(b.route.total_distance_miles - prev).to.be.at.most(500.05); });",
+                  "pm.test(\"stop costs sum to the total\", () => { const sum = b.fuel_stops.reduce((a, s) => a + parseFloat(s.cost_usd), 0); pm.expect(Math.abs(sum - parseFloat(b.fuel.total_cost_usd))).to.be.below(0.011); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET plan, long trip with many stops -> 200",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Boston, MA&finish=Seattle, WA"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"route geometry + distance\", () => { pm.expect(b.route.geometry.type).to.eql(\"LineString\"); pm.expect(b.route.total_distance_miles).to.be.above(0); pm.expect(b.route.map_url).to.include(\"/map/\"); });",
+                  "pm.test(\"total gallons = distance / 10 mpg\", () => pm.expect(Math.abs(b.fuel.total_gallons - b.route.total_distance_miles / 10)).to.be.below(0.5));",
+                  "pm.test(\"stops ordered, every gap <= 500 mi\", () => { const m = b.fuel_stops.map(s => s.route_mile_marker); pm.expect(m.length).to.be.above(0); let prev = 0; for (const x of m) { pm.expect(x - prev).to.be.at.most(500.05); prev = x; } pm.expect(b.route.total_distance_miles - prev).to.be.at.most(500.05); });",
+                  "pm.test(\"stop costs sum to the total\", () => { const sum = b.fuel_stops.reduce((a, s) => a + parseFloat(s.cost_usd), 0); pm.expect(Math.abs(sum - parseFloat(b.fuel.total_cost_usd))).to.be.below(0.011); });",
+                  "pm.test(\"a coast-to-coast trip needs several stops\", () => pm.expect(b.fuel_stops.length).to.be.above(5));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET map page -> 200 HTML (open the URL in a browser to see it drawn)",
+          "request": {
+            "method": "GET",
+            "url": "{{map_url}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"HTML page with Leaflet data blocks and a CSP\", () => { pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"text/html\"); pm.expect(pm.response.text()).to.include('id=\"geometry-data\"'); pm.expect(pm.response.headers.get(\"Content-Security-Policy\")).to.include(\"nonce-\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3 Client errors (400)",
+      "item": [
+        {
+          "name": "missing finish -> invalid_input",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Chicago, IL"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=invalid_input\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"invalid_input\"); });",
+                  "pm.test(\"fields lists finish\", () => pm.expect(pm.response.json().fields.finish[0]).to.include(\"required\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "buffer_miles out of range -> invalid_input",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Chicago, IL&finish=Houston, TX&buffer_miles=999"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=invalid_input\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"invalid_input\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "latitude out of range -> invalid_input",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/route-fuel-plan/",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"start\": {\"lat\": 95, \"lng\": -90}, \"finish\": \"Houston, TX\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=invalid_input\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"invalid_input\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "place name too long -> invalid_input",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/route-fuel-plan/",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"start\": \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, TX\", \"finish\": \"Houston, TX\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=invalid_input\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"invalid_input\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unknown place -> unresolvable_endpoint",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Nowheresville, ZZ&finish=Houston, TX"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=unresolvable_endpoint\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"unresolvable_endpoint\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "ambiguous bare city -> unresolvable_endpoint with a hint",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Springfield&finish=Houston, TX"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=unresolvable_endpoint\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"unresolvable_endpoint\"); });",
+                  "pm.test(\"hint lists the states\", () => pm.expect(pm.response.json().error).to.include(\"several states\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Toronto coordinates -> outside_usa",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=43.6532,-79.3832&finish=42.8864,-78.8784"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=outside_usa\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"outside_usa\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Mexico City as finish -> outside_usa",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Houston, TX&finish=19.4326,-99.1332"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=outside_usa\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"outside_usa\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "same place twice -> same_endpoint",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Chicago, IL&finish=chicago illinois"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=same_endpoint\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"same_endpoint\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "malformed JSON -> parse_error",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/route-fuel-plan/",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{oops",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"error envelope code=parse_error\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"parse_error\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4 Other statuses",
+      "item": [
+        {
+          "name": "PUT -> 405 method_not_allowed",
+          "request": {
+            "method": "PUT",
+            "url": "{{base}}/api/v1/route-fuel-plan/"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 405\", () => pm.response.to.have.status(405));",
+                  "pm.test(\"error envelope code=method_not_allowed\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"method_not_allowed\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "form-encoded POST -> 415 unsupported_media_type",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/route-fuel-plan/",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "start=Chicago, IL&finish=Houston, TX",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 415\", () => pm.response.to.have.status(415));",
+                  "pm.test(\"error envelope code=unsupported_media_type\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"unsupported_media_type\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Honolulu -> Los Angeles -> 422 unroutable",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Honolulu, HI&finish=Los Angeles, CA"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error envelope code=unroutable\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"unroutable\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Anchorage -> Fairbanks -> 422 infeasible (no stations in Alaska)",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/route-fuel-plan/?start=Anchorage, AK&finish=Fairbanks, AK"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"error envelope code=infeasible\", () => { const b = pm.response.json(); pm.expect(b.error).to.be.a(\"string\"); pm.expect(b.code).to.eql(\"infeasible\"); });",
+                  "pm.test(\"segment + hint\", () => { const b = pm.response.json(); pm.expect(b.infeasible_segment).to.have.keys(\"from_mile\", \"to_mile\"); pm.expect(b.hint).to.include(\"buffer_miles\"); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
