@@ -1,4 +1,5 @@
-"""Exceptions raised by the routing layer, mapped to HTTP responses in views."""
+"""Exceptions raised by the routing layer. They know nothing about HTTP; the
+status code and error code for each lives in ``trips.api_errors.DOMAIN_ERRORS``."""
 
 
 class RoutingError(Exception):
@@ -15,6 +16,11 @@ class OutsideUSAError(RoutingError):
 
 class SameEndpointError(RoutingError):
     """Start and finish resolve to the same location."""
+
+
+class UnroutableError(RoutingError):
+    """The provider found no drivable route between the endpoints (e.g. an island
+    to the mainland). The provider worked; the request cannot be fulfilled."""
 
 
 class RouteProviderError(RoutingError):
