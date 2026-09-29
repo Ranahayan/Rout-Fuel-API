@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 
 
 class FuelStation(models.Model):
@@ -27,6 +28,10 @@ class FuelStation(models.Model):
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)
     is_geocoded = models.BooleanField(default=False, db_index=True)
+    # Set by the loader on every write. Its maximum, together with the row count,
+    # is the table "fingerprint" the in-memory spatial index uses to notice a
+    # reload without a process restart.
+    updated_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         constraints = [
