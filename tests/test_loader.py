@@ -23,7 +23,7 @@ def csv_file(tmp_path):
 
 @pytest.mark.django_db
 def test_loader_dedup_filter_geocode(csv_file):
-    call_command("load_fuel_prices", csv=csv_file)
+    call_command("load_fuel_prices", csv=csv_file, min_geocode_rate=0)
 
     # ID 3 (Calgary, AB) dropped as non-US; IDs 1, 2, 4 remain.
     assert FuelStation.objects.count() == 3
@@ -43,14 +43,14 @@ def test_loader_dedup_filter_geocode(csv_file):
 
 @pytest.mark.django_db
 def test_loader_is_idempotent(csv_file):
-    call_command("load_fuel_prices", csv=csv_file)
-    call_command("load_fuel_prices", csv=csv_file)
+    call_command("load_fuel_prices", csv=csv_file, min_geocode_rate=0)
+    call_command("load_fuel_prices", csv=csv_file, min_geocode_rate=0)
     assert FuelStation.objects.count() == 3
     assert FuelStation.objects.filter(opis_id=1).count() == 1
 
 
 @pytest.mark.django_db
 def test_loader_handles_quoted_comma_address(csv_file):
-    call_command("load_fuel_prices", csv=csv_file)
+    call_command("load_fuel_prices", csv=csv_file, min_geocode_rate=0)
     alpha = FuelStation.objects.get(opis_id=1)
     assert alpha.address == "I-55, EXIT 1 & US-1"  # comma preserved, not split

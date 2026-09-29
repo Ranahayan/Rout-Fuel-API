@@ -53,7 +53,18 @@ def test_provider_failure_returns_502(client):
 
 @pytest.mark.django_db
 def test_infeasible_returns_422_with_segment(client):
-    # No stations loaded -> no fueling plan within range -> 422 with the segment.
+    # One station near the start, nothing for the remaining ~525 mi -> 422 with the gap.
+    FuelStation.objects.create(
+        opis_id=1,
+        name="ONLY",
+        address="",
+        city="X",
+        state="IL",
+        retail_price=3.0,
+        latitude=40.0,
+        longitude=-89.9,
+        is_geocoded=True,
+    )
     with patch("trips.services.get_route", side_effect=_fake_route):
         resp = client.post("/api/v1/route-fuel-plan/", COORDS, format="json")
     assert resp.status_code == 422

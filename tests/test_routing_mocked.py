@@ -84,8 +84,7 @@ def test_provider_error_raised_on_connection_failure():
 
 @override_settings(ROUTING_PROVIDER="", ORS_API_KEY="", OSRM_BASE_URL=OSRM_BASE)
 def test_outside_usa_rejected_before_any_call():
-    # Paris coordinates -> rejected by the USA bounds check (no HTTP call).
-    # (Note: a rectangular bbox cannot separate e.g. Toronto from Buffalo;
-    #  place-name endpoints are constrained to US cities by the offline geocoder.)
+    # Paris coordinates -> rejected by the within-USA polygon test (no HTTP call).
+    # Border cases (Toronto vs. Buffalo, ...) are covered in tests/test_usa_boundary.py.
     with pytest.raises(OutsideUSAError):
         get_route({"lat": 48.85, "lng": 2.35}, FINISH)
